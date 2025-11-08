@@ -594,6 +594,35 @@ def create_lead_in_netsuite(user_id, user_data, access_token):
 
     print(f"🆕 Creating Lead for {first_name} ({phone}, {email})")
 
+def ensure_lead_exists(message, access_token):
+    """Check if Telegram user already exists in NetSuite before creating."""
+    user = message.from_user
+    chat_id = str(user.id)
+    first_name = user.first_name or ""
+    last_name = user.last_name or ""
+    username = user.username or ""
+
+    # Step 1: Check if this Telegram ID already exists in NetSuite
+    sql = f"SELECT id FROM customer WHERE custentity_tg_chatid = '{chat_id}'"
+    result = handle_mcp_function_call(
+        "ns_runCustomSuiteQL", {"sqlQuery": sql}, access_token)
+    records = result.get("items") or result.get("rows") or []
+
+    if records:
+        print(f"Lead already exists for chat ID {chat_id}")
+        return {"existing": records[0]}
+
+    # Step 2: Optional — if you’re collecting email or phone, check duplicates
+    phone = None  # (Later you can collect this from the chat)
+    email = None
+    existing_lead = lead_exists_in_netsuite(phone, email, access_token)
+    if existing_lead:
+        print(f"Lead already exists based on phone/email: {existing_lead}")
+        return {"existing": existing_lead}
+
+    # Step 3: Create new lead
+    print(f"Creating new lead for Telegram user {first_name} ({chat_id})")
+
     payload = {
         "recordType": "customer",
         "fields": {
@@ -615,6 +644,22 @@ def create_lead_in_netsuite(user_id, user_data, access_token):
 # ========================
 # CHECK IF LEAD EXISTS
 # ========================
+            "customform": {"id": "221"},  # Standard Lead Form internal ID
+            "entitystatus": {"id": "6"},  # Lead - Qualified
+            "subsidiary": {"id": "10"},   # Collab Ants
+            "isperson": True,
+            "firstname": first_name or "Unknown",
+            "lastname": last_name or "User",
+            "custentity_tg_chatid": chat_id
+        }
+    }
+
+    creation = handle_mcp_function_call(
+        "ns_createRecord", payload, access_token)
+    print("Lead created in NetSuite:", creation)
+    return creation
+
+
 def lead_exists_in_netsuite(phone, email, access_token):
     """Check if a lead already exists using phone or email."""
     filters = []
@@ -630,6 +675,8 @@ def lead_exists_in_netsuite(phone, email, access_token):
     sql = f"SELECT id, entityid, email, phone FROM customer WHERE {where_clause}"
 
     result = handle_mcp_function_call("ns_runCustomSuiteQL", {"sqlQuery": sql}, access_token)
+    result = handle_mcp_function_call(
+        "ns_runCustomSuiteQL", {"sqlQuery": sql}, access_token)
     records = result.get("items") or result.get("rows") or []
 
     if records:
@@ -764,6 +811,19 @@ def welcome(message):
         parse_mode="Markdown"
     )
 
+@bot.message_handler(commands=['start'])
+def welcome(message):
+    bot.send_chat_action(message.chat.id, 'typing')
+    access_token = get_valid_access_token()
+    ensure_lead_exists(message, access_token)
+
+    bot.send_message(
+        message.chat.id,
+        f"Hi {message.from_user.first_name} Welcome to {BOT_NAME}!\nAsk me about available properties.",
+        parse_mode="Markdown"
+    )
+
+
 @bot.message_handler(func=lambda m: True)
 def chat_with_ai(message):
     global tokens
@@ -810,6 +870,28 @@ def chat_with_ai(message):
     ai_reply = ask_claude_with_mcp(conversation, access_token)
     conversation.append({"role": "assistant", "content": ai_reply})
     bot.send_message(user_id, ai_reply)
+    # access_token = valid_token["access_token"]
+    access_token = get_valid_access_token()
+
+    user_id = message.chat.id
+
+    # Retrieve or create conversation state
+    if user_id not in user_conversations:
+        user_conversations[user_id] = []
+
+    conversation = user_conversations[user_id]
+
+    # Add the user message
+    conversation.append({"role": "user", "content": message.text})
+
+    # Ask Claude, passing prior messages
+    ai_reply = ask_claude_with_mcp(conversation, access_token)
+
+    # Save Claude’s response
+    conversation.append({"role": "assistant", "content": ai_reply})
+
+    bot.send_message(user_id, ai_reply)
+    print(user_conversations)
 
 # ========================
 # MAIN EXECUTION
@@ -846,4 +928,5 @@ if __name__ == "__main__":
 
     print("NetSuite access token obtained!")
     print("Starting Telegram bot...")
+    bot.polling(non_stop=True)
     bot.polling(non_stop=True)
