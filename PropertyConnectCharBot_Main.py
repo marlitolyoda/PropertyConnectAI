@@ -5,22 +5,20 @@ Claude can now use NetSuite MCP tools (ns_getRecord, ns_runSavedSearch, etc.)
 via the access token obtained from OAuth2.
 """
 
-import sys
-import base64
-from dotenv import load_dotenv
-import os
-from anthropic import Anthropic
-from requests.auth import HTTPBasicAuth
-from urllib.parse import urlparse, parse_qs
-from http.server import BaseHTTPRequestHandler, HTTPServer
-import time
-import uuid
-import webbrowser
-import json
-import requests
-import telebot
 import warnings
 warnings.filterwarnings("ignore", category=DeprecationWarning)
+import telebot
+import requests
+import json
+import webbrowser
+import uuid
+import time
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from urllib.parse import urlparse, parse_qs
+from requests.auth import HTTPBasicAuth
+from anthropic import Anthropic
+import os
+from dotenv import load_dotenv
 
 # ========================
 # CONFIGURATION
@@ -28,7 +26,7 @@ warnings.filterwarnings("ignore", category=DeprecationWarning)
 load_dotenv()
 BOT_NAME = "Property Connect AI"
 
-TG_API_TOKEN = os.getenv("TG_API_TOKEN_DAGS")
+TG_API_TOKEN = os.getenv("TG_API_TOKEN_MAIN")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 anthropic_client = Anthropic(api_key=ANTHROPIC_API_KEY)
 
@@ -40,14 +38,8 @@ ACCOUNT_ID = "3580073"
 REDIRECT_URI = "http://localhost:8080"
 AUTH_URL = f"https://{ACCOUNT_ID}.app.netsuite.com/app/login/oauth2/authorize.nl"
 TOKEN_URL = f"https://{ACCOUNT_ID}.suitetalk.api.netsuite.com/services/rest/auth/oauth2/v1/token"
-# <-- MCP endpoint base
-MCP_URL = f"https://{ACCOUNT_ID}.app.netsuite.com/mcp"
+MCP_URL = f"https://{ACCOUNT_ID}.app.netsuite.com/mcp"   # <-- MCP endpoint base
 SCOPE = "rest_webservices"
-
-refresh_token = os.getenv("NETSUITE_REFRESH_TOKEN")
-
-os.environ["OAUTHLIB_RELAX_TOKEN_SCOPE"] = "1"
-os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
 
 # ========================
 # INIT
@@ -67,7 +59,6 @@ auth_request_url = (
     f"&state={STATE}"
 )
 
-
 class OAuthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         query = urlparse(self.path).query
@@ -78,12 +69,10 @@ class OAuthHandler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-type", "text/html")
             self.end_headers()
-            self.wfile.write(
-                b"<h2> Authorization received! You can close this window.</h2>")
+            self.wfile.write(b"<h2> Authorization received! You can close this window.</h2>")
         else:
             self.send_response(400)
             self.end_headers()
-
 
 def get_auth_code():
     server_address = ('', 8080)
@@ -91,81 +80,44 @@ def get_auth_code():
     httpd.auth_code = None
     httpd.state_received = None
 
-    print("Opening browser for NetSuite login...")
+    print("🌐 Opening browser for NetSuite login...")
     webbrowser.open(auth_request_url)
 
     while httpd.auth_code is None:
         httpd.handle_request()
 
     if httpd.state_received != STATE:
-        raise ValueError("State mismatch — possible CSRF attack!")
+        raise ValueError("⚠️ State mismatch — possible CSRF attack!")
 
     return httpd.auth_code
 
-
 def exchange_code_for_token(auth_code):
-    data = {"grant_type": "authorization_code",
-            "code": auth_code, "redirect_uri": REDIRECT_URI}
-    response = requests.post(TOKEN_URL, data=data,
-                             auth=HTTPBasicAuth(CLIENT_ID, CLIENT_SECRET))
+    data = {"grant_type": "authorization_code", "code": auth_code, "redirect_uri": REDIRECT_URI}
+    response = requests.post(TOKEN_URL, data=data, auth=HTTPBasicAuth(CLIENT_ID, CLIENT_SECRET))
     response.raise_for_status()
     token_data = response.json()
-    token_data["expires_at"] = time.time(
-    ) + float(token_data.get("expires_in", 3600))
+    token_data["expires_at"] = time.time() + float(token_data.get("expires_in", 3600))
     return token_data
 
-
 def refresh_access_token(refresh_token):
-    url = f"https://{ACCOUNT_ID}.suitetalk.api.netsuite.com/services/rest/auth/oauth2/v1/token"
-    payload = {
-        "grant_type": "refresh_token",
-        "refresh_token": refresh_token,
-        "client_id": CLIENT_ID,
-        "client_secret": CLIENT_SECRET
-    }
-    headers = {
-        "Content-Type": "application/x-www-form-urlencoded"
-    }
-    try:
-        response = requests.post(
-            url, data=payload, headers=headers, timeout=10)
-        response.raise_for_status()
-        token_data = response.json()
-        return token_data["access_token"]
-    except requests.exceptions.RequestException as e:
-        print(f"Error refreshing NetSuite token: {e}")
-        sys.exit(1)
+    data = {"grant_type": "refresh_token", "refresh_token": refresh_token}
+    response = requests.post(TOKEN_URL, data=data, auth=HTTPBasicAuth(CLIENT_ID, CLIENT_SECRET))
+    response.raise_for_status()
+    token_data = response.json()
+    token_data["expires_at"] = time.time() + float(token_data.get("expires_in", 3600))
+    return token_data
 
-# def get_valid_access_token(token_data):
-#     if time.time() > token_data.get("expires_at", 0):
-#         print("Refreshing expired token...")
-#         token_data = refresh_access_token(token_data["refresh_token"])
-#     return token_data
-
-
-def get_valid_access_token(tokens=None):
-    try:
-        # Load saved refresh token if tokens not passed
-        if tokens is None:
-            with open("netsuite_refresh_token.txt", "r") as f:
-                refresh_token = f.read().strip()
-        else:
-            refresh_token = tokens.get("refresh_token")
-
-        refreshed = refresh_access_token(refresh_token)
-        return refreshed
-    except Exception as e:
-        print(f"Failed to refresh access token: {e}")
-        sys.exit(1)
+def get_valid_access_token(token_data):
+    if time.time() > token_data.get("expires_at", 0):
+        print("🔄 Refreshing expired token...")
+        token_data = refresh_access_token(token_data["refresh_token"])
+    return token_data
 
 # ========================
 # STEP 2: ANTHROPIC + MCP
 # ========================
-
-
 def get_anthropic_client_with_mcp(_):
     return Anthropic(api_key=ANTHROPIC_API_KEY)
-
 
 def handle_mcp_function_call(tool_name, params, access_token):
     headers = {
@@ -192,8 +144,7 @@ def handle_mcp_function_call(tool_name, params, access_token):
                 record_data = record_resp.json()
                 records.append(record_data)
             else:
-                records.append(
-                    {"id": item.get("id"), "error": "Failed to fetch record details"})
+                records.append({"id": item.get("id"), "error": "Failed to fetch record details"})
 
         return {
             "count": len(records),
@@ -305,7 +256,6 @@ def handle_mcp_function_call(tool_name, params, access_token):
     else:
         return {"error": f"Unknown tool name: {tool_name}"}
 
-
 def ask_claude_with_mcp(messages, access_token):
 
     while True:
@@ -324,7 +274,7 @@ def ask_claude_with_mcp(messages, access_token):
                     4. Maintain a friendly, persuasive, and professional tone.
                     5. Don't answer if the question is not related in the role you have.
                     6. Before providing any quotation or proposal, first confirm:
-                        - The user’s **contact number** and **email address**, or
+                        - The user’s **contact number** or **email address**, or
                         - Whether the user intends to **proceed with availing the property**.
                     7. Once both contact number and email are obtained, create a record type named Lead in NetSuite with the following details:
                         - Custom Form: "Standard Lead Form"
@@ -458,7 +408,7 @@ def ask_claude_with_mcp(messages, access_token):
                         },
                         "required": ["sqlQuery"]
                     }
-                }
+                }                
             ],
             messages=messages
         )
@@ -496,84 +446,8 @@ def ask_claude_with_mcp(messages, access_token):
         # Continue the loop (Claude will now see the result and proceed)
 
 # ========================
-# STEP 3: AUTO-CREATE LEAD ON /start
+# 🆕 STEP 3: AUTO-CREATE LEAD UPON GETTING PHONE NO OR EMAIL
 # ========================
-
-
-# def ensure_lead_exists(message, access_token):
-#     """Check if Telegram user already exists in NetSuite before creating."""
-#     user = message.from_user
-#     chat_id = str(user.id)
-#     first_name = user.first_name or ""
-#     last_name = user.last_name or ""
-#     username = user.username or ""
-
-#     # Step 1: Check if this Telegram ID already exists in NetSuite
-#     sql = f"SELECT id FROM customer WHERE custentity_tg_chatid = '{chat_id}'"
-#     result = handle_mcp_function_call(
-#         "ns_runCustomSuiteQL", {"sqlQuery": sql}, access_token)
-#     records = result.get("items") or result.get("rows") or []
-
-#     if records:
-#         print(f"Lead already exists for chat ID {chat_id}")
-#         return {"existing": records[0]}
-
-#     # Step 2: Optional — if you’re collecting email or phone, check duplicates
-#     phone = None  # (Later you can collect this from the chat)
-#     email = None
-#     existing_lead = lead_exists_in_netsuite(phone, email, access_token)
-#     if existing_lead:
-#         print(f"Lead already exists based on phone/email: {existing_lead}")
-#         return {"existing": existing_lead}
-
-#     # Step 3: Create new lead
-#     print(f"Creating new lead for Telegram user {first_name} ({chat_id})")
-
-#     payload = {
-#         "recordType": "customer",
-#         "fields": {
-#             "customform": {"id": "221"},  # Standard Lead Form internal ID
-#             "entitystatus": {"id": "6"},  # Lead - Qualified
-#             "subsidiary": {"id": "10"},   # Collab Ants
-#             "isperson": True,
-#             "firstname": first_name or "Unknown",
-#             "lastname": last_name or "User",
-#             "custentity_tg_chatid": chat_id
-#         }
-#     }
-
-#     creation = handle_mcp_function_call(
-#         "ns_createRecord", payload, access_token)
-#     print("Lead created in NetSuite:", creation)
-#     return creation
-
-
-# def lead_exists_in_netsuite(phone, email, access_token):
-#     """Check if a lead already exists using phone or email."""
-#     filters = []
-#     if phone:
-#         filters.append(f"phone = '{phone}'")
-#     if email:
-#         filters.append(f"email = '{email}'")
-
-#     if not filters:
-#         return False  # Nothing to search for
-
-#     where_clause = " OR ".join(filters)
-#     sql = f"SELECT id, entityid, email, phone FROM customer WHERE {where_clause}"
-
-#     result = handle_mcp_function_call(
-#         "ns_runCustomSuiteQL", {"sqlQuery": sql}, access_token)
-#     records = result.get("items") or result.get("rows") or []
-
-#     if records:
-#         existing = records[0]
-#         print(f"Existing lead found: {existing}")
-#         return existing
-#     else:
-#         print("No existing lead found.")
-#         return False
-
 def create_lead_in_netsuite(user_id, user_data, access_token):
     """Create a Lead record in NetSuite once both phone + email are known."""
     first_name = user_data.get("first_name", "Unknown")
@@ -613,7 +487,7 @@ def create_lead_in_netsuite(user_id, user_data, access_token):
     return creation
 
 # ========================
-# CHECK IF LEAD EXISTS
+# 🕵️ CHECK IF LEAD EXISTS
 # ========================
 def lead_exists_in_netsuite(phone, email, access_token):
     """Check if a lead already exists using phone or email."""
@@ -634,112 +508,16 @@ def lead_exists_in_netsuite(phone, email, access_token):
 
     if records:
         existing = records[0]
-        print(f"Existing lead found: {existing}")
+        print(f"ℹ️ Existing lead found: {existing}")
         return existing
     else:
-        print("No existing lead found.")
+        print("🆕 No existing lead found.")
         return False
     
-
-
-def refresh_and_rotate_token():
-    stored_refresh_token = load_refresh_token()
-    if not stored_refresh_token:
-        raise Exception("No refresh token found. Run OAuth2 flow first.")
-
-    tokens = refresh_access_token(stored_refresh_token)
-
-    # Only store if returned
-    if "refresh_token" in tokens:
-        store_refresh_token_somewhere(tokens["refresh_token"])
-        print("Refresh token updated")
-    else:
-        print("ℹNo refresh token returned; using existing one")
-
-    return tokens
-
-
-REFRESH_TOKEN_FILE = r"C:\Users\IISAdmin\Documents\Visual Studio 2017\PropertyConnectAI\netsuite_refresh_token.txt"
-
-
-def store_refresh_token_somewhere(new_refresh_token):
-    with open(REFRESH_TOKEN_FILE, "w") as f:
-        f.write(new_refresh_token)
-
-
-def load_refresh_token():
-    if os.path.exists(REFRESH_TOKEN_FILE):
-        with open(REFRESH_TOKEN_FILE) as f:
-            return f.read().strip()
-    return None
-
-
-def refresh_and_rotate_token():
-    stored_refresh_token = load_refresh_token()
-    if not stored_refresh_token:
-        raise Exception("No refresh token found. Run OAuth2 flow first.")
-
-    tokens = refresh_access_token(stored_refresh_token)
-
-    if "refresh_token" in tokens and tokens["refresh_token"]:
-        store_refresh_token_somewhere(tokens["refresh_token"])
-        print("Refresh token updated")
-    else:
-        print("ℹNo refresh token returned; keeping existing one")
-
-    return tokens
-
-
-def get_valid_access_token_from_file():
-    refresh_token = load_refresh_token()
-    if not refresh_token:
-        raise Exception("No refresh token found. Run OAuth2 flow first.")
-    return refresh_access_token(refresh_token)
-
 
 # ========================
 # TELEGRAM HANDLERS
 # ========================
-# @bot.message_handler(commands=['start'])
-# def welcome(message):
-#     bot.send_chat_action(message.chat.id, 'typing')
-#     access_token = get_valid_access_token()
-#     ensure_lead_exists(message, access_token)
-
-#     bot.send_message(
-#         message.chat.id,
-#         f"Hi {message.from_user.first_name} Welcome to {BOT_NAME}!\nAsk me about available properties.",
-#         parse_mode="Markdown"
-#     )
-
-
-# @bot.message_handler(func=lambda m: True)
-# def chat_with_ai(message):
-#     global tokens
-#     bot.send_chat_action(message.chat.id, 'typing')
-#     # access_token = valid_token["access_token"]
-#     access_token = get_valid_access_token()
-
-#     user_id = message.chat.id
-
-#     # Retrieve or create conversation state
-#     if user_id not in user_conversations:
-#         user_conversations[user_id] = []
-
-#     conversation = user_conversations[user_id]
-
-#     # Add the user message
-#     conversation.append({"role": "user", "content": message.text})
-
-#     # Ask Claude, passing prior messages
-#     ai_reply = ask_claude_with_mcp(conversation, access_token)
-
-#     # Save Claude’s response
-#     conversation.append({"role": "assistant", "content": ai_reply})
-
-#     bot.send_message(user_id, ai_reply)
-#     print(user_conversations)
-
 @bot.message_handler(commands=['start'])
 def welcome(message):
     bot.send_chat_action(message.chat.id, 'typing')
@@ -814,36 +592,11 @@ def chat_with_ai(message):
 # ========================
 # MAIN EXECUTION
 # ========================
-# if __name__ == "__main__":
-#     print("Getting NetSuite authorization...")
-#     # code = get_auth_code()
-#     # tokens = exchange_code_for_token(code)
-
-#     access_token = get_valid_access_token()
-#     store_refresh_token_somewhere(refresh_token)
-
-#     print("NetSuite access token obtained!")
-#     # print("Refresh token:", tokens["refresh_token"])
-
-#     print("Bot is running... (Ctrl+C to stop)")
-#     bot.polling(non_stop=True)
-
-
 if __name__ == "__main__":
-    REFRESH_TOKEN_FILE = "netsuite_refresh_token.txt"
+    print("🔐 Getting NetSuite authorization...")
+    code = get_auth_code()
+    tokens = exchange_code_for_token(code)
+    print("✅ NetSuite access token obtained!")
 
-    if not os.path.exists(REFRESH_TOKEN_FILE):
-        print("🔐 Performing first-time NetSuite authorization...")
-        code = get_auth_code()
-        tokens = exchange_code_for_token(code)
-        if "refresh_token" in tokens:
-            store_refresh_token_somewhere(tokens["refresh_token"])
-            print("Refresh token saved for future use.")
-        access_token = tokens["access_token"]
-    else:
-        print("Loading existing refresh token and refreshing access token...")
-        access_token = get_valid_access_token_from_file()
-
-    print("NetSuite access token obtained!")
-    print("Starting Telegram bot...")
+    print("🚀 Bot is running... (Ctrl+C to stop)")
     bot.polling(non_stop=True)
