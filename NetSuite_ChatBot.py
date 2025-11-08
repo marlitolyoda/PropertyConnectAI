@@ -24,8 +24,6 @@ TOKEN_URL = "https://3580073.suitetalk.api.netsuite.com/services/rest/auth/oauth
 CUSTOM_RECORD_SCRIPT_ID = "customrecord_collab_properties"
 SCOPE = "rest_webservices"
 
-print("hELLO")
-
 # ========================
 # TELEGRAM BOT INIT
 # ========================
