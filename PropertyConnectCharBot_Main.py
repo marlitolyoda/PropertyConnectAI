@@ -5,20 +5,20 @@ Claude can now use NetSuite MCP tools (ns_getRecord, ns_runSavedSearch, etc.)
 via the access token obtained from OAuth2.
 """
 
+from dotenv import load_dotenv
+import os
+from anthropic import Anthropic
+from requests.auth import HTTPBasicAuth
+from urllib.parse import urlparse, parse_qs
+from http.server import BaseHTTPRequestHandler, HTTPServer
+import time
+import uuid
+import webbrowser
+import json
+import requests
+import telebot
 import warnings
 warnings.filterwarnings("ignore", category=DeprecationWarning)
-import telebot
-import requests
-import json
-import webbrowser
-import uuid
-import time
-from http.server import BaseHTTPRequestHandler, HTTPServer
-from urllib.parse import urlparse, parse_qs
-from requests.auth import HTTPBasicAuth
-from anthropic import Anthropic
-import os
-from dotenv import load_dotenv
 
 # ========================
 # CONFIGURATION
@@ -38,7 +38,8 @@ ACCOUNT_ID = "3580073"
 REDIRECT_URI = "http://localhost:8080"
 AUTH_URL = f"https://{ACCOUNT_ID}.app.netsuite.com/app/login/oauth2/authorize.nl"
 TOKEN_URL = f"https://{ACCOUNT_ID}.suitetalk.api.netsuite.com/services/rest/auth/oauth2/v1/token"
-MCP_URL = f"https://{ACCOUNT_ID}.app.netsuite.com/mcp"   # <-- MCP endpoint base
+# <-- MCP endpoint base
+MCP_URL = f"https://{ACCOUNT_ID}.app.netsuite.com/mcp"
 SCOPE = "rest_webservices"
 
 # ========================
@@ -59,6 +60,7 @@ auth_request_url = (
     f"&state={STATE}"
 )
 
+
 class OAuthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         query = urlparse(self.path).query
@@ -69,10 +71,12 @@ class OAuthHandler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-type", "text/html")
             self.end_headers()
-            self.wfile.write(b"<h2> Authorization received! You can close this window.</h2>")
+            self.wfile.write(
+                b"<h2> Authorization received! You can close this window.</h2>")
         else:
             self.send_response(400)
             self.end_headers()
+
 
 def get_auth_code():
     server_address = ('', 8080)
@@ -91,21 +95,29 @@ def get_auth_code():
 
     return httpd.auth_code
 
+
 def exchange_code_for_token(auth_code):
-    data = {"grant_type": "authorization_code", "code": auth_code, "redirect_uri": REDIRECT_URI}
-    response = requests.post(TOKEN_URL, data=data, auth=HTTPBasicAuth(CLIENT_ID, CLIENT_SECRET))
+    data = {"grant_type": "authorization_code",
+            "code": auth_code, "redirect_uri": REDIRECT_URI}
+    response = requests.post(TOKEN_URL, data=data,
+                             auth=HTTPBasicAuth(CLIENT_ID, CLIENT_SECRET))
     response.raise_for_status()
     token_data = response.json()
-    token_data["expires_at"] = time.time() + float(token_data.get("expires_in", 3600))
+    token_data["expires_at"] = time.time(
+    ) + float(token_data.get("expires_in", 3600))
     return token_data
+
 
 def refresh_access_token(refresh_token):
     data = {"grant_type": "refresh_token", "refresh_token": refresh_token}
-    response = requests.post(TOKEN_URL, data=data, auth=HTTPBasicAuth(CLIENT_ID, CLIENT_SECRET))
+    response = requests.post(TOKEN_URL, data=data,
+                             auth=HTTPBasicAuth(CLIENT_ID, CLIENT_SECRET))
     response.raise_for_status()
     token_data = response.json()
-    token_data["expires_at"] = time.time() + float(token_data.get("expires_in", 3600))
+    token_data["expires_at"] = time.time(
+    ) + float(token_data.get("expires_in", 3600))
     return token_data
+
 
 def get_valid_access_token(token_data):
     if time.time() > token_data.get("expires_at", 0):
@@ -116,8 +128,11 @@ def get_valid_access_token(token_data):
 # ========================
 # STEP 2: ANTHROPIC + MCP
 # ========================
+
+
 def get_anthropic_client_with_mcp(_):
     return Anthropic(api_key=ANTHROPIC_API_KEY)
+
 
 def handle_mcp_function_call(tool_name, params, access_token):
     headers = {
@@ -129,6 +144,7 @@ def handle_mcp_function_call(tool_name, params, access_token):
     base_url = "https://3580073.suitetalk.api.netsuite.com/services/rest/record/v1"
     mcp_base = f"https://3580073.app.netsuite.com/mcp"
 
+    # === Tool: List Records ===
     if tool_name == "ns_listRecords":
         record_type = params.get("recordType")
         url = f"{base_url}/{record_type}"
@@ -144,13 +160,15 @@ def handle_mcp_function_call(tool_name, params, access_token):
                 record_data = record_resp.json()
                 records.append(record_data)
             else:
-                records.append({"id": item.get("id"), "error": "Failed to fetch record details"})
+                records.append(
+                    {"id": item.get("id"), "error": "Failed to fetch record details"})
 
         return {
             "count": len(records),
             "records": records
         }
 
+    # === Tool: Get a Specific Record ===
     elif tool_name == "ns_getRecord":
         record_type = params.get("recordType")
         record_id = params.get("recordId")
@@ -158,7 +176,7 @@ def handle_mcp_function_call(tool_name, params, access_token):
         response = requests.get(url, headers=headers)
         return response.json()
 
-    # === Tool: Create a record ===
+    # === Tool: Create a Record ===
     elif tool_name == "ns_createRecord":
         record_type = params.get("recordType")
         fields = params.get("fields", {})
@@ -181,7 +199,7 @@ def handle_mcp_function_call(tool_name, params, access_token):
                 "details": response.text or "No response body"
             }
 
-    # === Tool: Update a record ===
+    # === Tool: Update a Record ===
     elif tool_name == "ns_updateRecord":
         record_type = params.get("recordType")
         record_id = params.get("recordId")
@@ -193,7 +211,7 @@ def handle_mcp_function_call(tool_name, params, access_token):
         else:
             return {"error": "Failed to update record", "details": response.text}
 
-    # === Tool: Get record type metadata ===
+    # === Tool: Get Record Type Metadata ===
     elif tool_name == "ns_getRecordTypeMetadata":
         record_type = params.get("recordType")
         url = f"{mcp_base}/rest/metadata-catalog/v1/recordTypes/{record_type}"
@@ -203,7 +221,7 @@ def handle_mcp_function_call(tool_name, params, access_token):
         else:
             return {"error": f"Failed to fetch metadata for {record_type}", "details": response.text}
 
-    # === Tool: List all saved searches ===
+    # === Tool: List All Saved Searches ===
     elif tool_name == "ns_listSavedSearches":
         url = f"{mcp_base}/rest/record/v1/savedSearch"
         response = requests.get(url, headers=headers)
@@ -212,7 +230,7 @@ def handle_mcp_function_call(tool_name, params, access_token):
         else:
             return {"error": "Failed to list saved searches", "details": response.text}
 
-    # === Tool: Run a saved search (MCP) ===
+    # === Tool: Run a Saved Search (MCP) ===
     elif tool_name == "ns_runSavedSearch":
         saved_search_id = params.get("searchId")
         url = f"{base_url}/rest/record/v1/savedSearch/{saved_search_id}/results"
@@ -222,7 +240,7 @@ def handle_mcp_function_call(tool_name, params, access_token):
         else:
             return {"error": f"Failed to run saved search {saved_search_id}", "details": response.text}
 
-    # === Tool: Run a report (MCP) ===
+    # === Tool: Run a Report (MCP) ===
     elif tool_name == "ns_runReport":
         report_id = params.get("reportId")
         payload = {"parameters": params.get("parameters", {})}
@@ -233,7 +251,7 @@ def handle_mcp_function_call(tool_name, params, access_token):
         else:
             return {"error": f"Failed to run report {report_id}", "details": response.text}
 
-    # === Tool: List all reports ===
+    # === Tool: List All Reports ===
     elif tool_name == "ns_listAllReports":
         url = f"{mcp_base}/rest/reporting/v1/reports"
         response = requests.get(url, headers=headers)
@@ -242,7 +260,7 @@ def handle_mcp_function_call(tool_name, params, access_token):
         else:
             return {"error": "Failed to list reports", "details": response.text}
 
-    # === Tool: Run a custom SuiteQL query (MCP) ===
+    # === Tool: Run a Custom SuiteQL Query (MCP) ===
     elif tool_name == "ns_runCustomSuiteQL":
         sql = params.get("sqlQuery")
         payload = {"q": sql}
@@ -255,6 +273,7 @@ def handle_mcp_function_call(tool_name, params, access_token):
 
     else:
         return {"error": f"Unknown tool name: {tool_name}"}
+
 
 def ask_claude_with_mcp(messages, access_token):
 
@@ -408,7 +427,7 @@ def ask_claude_with_mcp(messages, access_token):
                         },
                         "required": ["sqlQuery"]
                     }
-                }                
+                }
             ],
             messages=messages
         )
@@ -448,6 +467,8 @@ def ask_claude_with_mcp(messages, access_token):
 # ========================
 # 🆕 STEP 3: AUTO-CREATE LEAD UPON GETTING PHONE NO OR EMAIL
 # ========================
+
+
 def create_lead_in_netsuite(user_id, user_data, access_token):
     """Create a Lead record in NetSuite once both phone + email are known."""
     first_name = user_data.get("first_name", "Unknown")
@@ -456,22 +477,23 @@ def create_lead_in_netsuite(user_id, user_data, access_token):
     email = user_data.get("email")
 
     if not (phone and email):
-        print(f"⚠️ Skipping lead creation — missing data. Phone: {phone}, Email: {email}")
+        print(
+            f"⚠️ Skipping lead creation — missing data. Phone: {phone}, Email: {email}")
         return
-    
+
     # 🕵️ Check for existing lead first
     existing = lead_exists_in_netsuite(phone, email, access_token)
     if existing:
         print(f"🚫 Lead already exists: ID {existing.get('id')}")
         return {"existing": existing.get("id")}
 
-
     print(f"🆕 Creating Lead for {first_name} ({phone}, {email})")
 
     payload = {
         "recordType": "customer",
         "fields": {
-            "customform": {"id": "221"},      # ✅ Standard Lead Form internal ID
+            # ✅ Standard Lead Form internal ID
+            "customform": {"id": "221"},
             "entitystatus": {"id": "7"},      # ✅ Lead - Qualified
             "subsidiary": {"id": "10"},       # ✅ Collab Ants
             "isperson": True,
@@ -482,13 +504,16 @@ def create_lead_in_netsuite(user_id, user_data, access_token):
         }
     }
 
-    creation = handle_mcp_function_call("ns_createRecord", payload, access_token)
+    creation = handle_mcp_function_call(
+        "ns_createRecord", payload, access_token)
     print("✅ Lead created in NetSuite:", creation)
     return creation
 
 # ========================
 # 🕵️ CHECK IF LEAD EXISTS
 # ========================
+
+
 def lead_exists_in_netsuite(phone, email, access_token):
     """Check if a lead already exists using phone or email."""
     filters = []
@@ -503,7 +528,8 @@ def lead_exists_in_netsuite(phone, email, access_token):
     where_clause = " OR ".join(filters)
     sql = f"SELECT id, entityid, email, phone FROM customer WHERE {where_clause}"
 
-    result = handle_mcp_function_call("ns_runCustomSuiteQL", {"sqlQuery": sql}, access_token)
+    result = handle_mcp_function_call(
+        "ns_runCustomSuiteQL", {"sqlQuery": sql}, access_token)
     records = result.get("items") or result.get("rows") or []
 
     if records:
@@ -513,7 +539,7 @@ def lead_exists_in_netsuite(phone, email, access_token):
     else:
         print("🆕 No existing lead found.")
         return False
-    
+
 
 # ========================
 # TELEGRAM HANDLERS
@@ -542,6 +568,7 @@ def welcome(message):
         parse_mode="Markdown"
     )
 
+
 @bot.message_handler(func=lambda m: True)
 def chat_with_ai(message):
     global tokens
@@ -551,7 +578,8 @@ def chat_with_ai(message):
 
     user_id = message.chat.id
     if user_id not in user_conversations:
-        user_conversations[user_id] = {"chat_history": [], "phone": None, "email": None, "lead_created": False}
+        user_conversations[user_id] = {
+            "chat_history": [], "phone": None, "email": None, "lead_created": False}
 
     conversation = user_conversations[user_id]["chat_history"]
     user_data = user_conversations[user_id]
@@ -582,12 +610,14 @@ def chat_with_ai(message):
     ):
         create_lead_in_netsuite(user_id, user_data, access_token)
         user_data["lead_created"] = True
-        bot.send_message(user_id, "✅ You’ve been added as a lead in our system! Thank you 😊")
+        bot.send_message(
+            user_id, "✅ You’ve been added as a lead in our system! Thank you 😊")
 
     # Continue normal AI chat
     ai_reply = ask_claude_with_mcp(conversation, access_token)
     conversation.append({"role": "assistant", "content": ai_reply})
     bot.send_message(user_id, ai_reply)
+
 
 # ========================
 # MAIN EXECUTION
