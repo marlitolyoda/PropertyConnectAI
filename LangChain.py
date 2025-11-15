@@ -3,8 +3,6 @@ PropertyConnect AI Chatbot — Telegram + Anthropic + NetSuite MCP + LangChain
 -----------------------------------------------------------------------------
 """
 
-import sys
-import base64
 from dotenv import load_dotenv
 import os
 from typing import Optional, Dict, Any
@@ -32,7 +30,7 @@ warnings.filterwarnings("ignore", category=DeprecationWarning)
 load_dotenv()
 BOT_NAME = "Property Connect AI"
 
-TG_API_TOKEN = os.getenv("TG_API_TOKEN_MAIN")
+TG_API_TOKEN = os.getenv("TG_API_TOKEN")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 
 CLIENT_ID = os.getenv("CLIENT_ID")
@@ -45,14 +43,6 @@ TOKEN_URL = f"https://{ACCOUNT_ID}.suitetalk.api.netsuite.com/services/rest/auth
 MCP_URL = f"https://{ACCOUNT_ID}.app.netsuite.com/mcp"
 SCOPE = "rest_webservices"
 
-refresh_token = os.getenv("NETSUITE_REFRESH_TOKEN")
-
-os.environ["OAUTHLIB_RELAX_TOKEN_SCOPE"] = "1"
-os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
-
-# ========================
-# INIT
-# ========================
 bot = telebot.TeleBot(TG_API_TOKEN)
 user_conversations = {}
 
@@ -113,41 +103,21 @@ def exchange_code_for_token(auth_code):
 
 
 def refresh_access_token(refresh_token):
-    url = f"https://{ACCOUNT_ID}.suitetalk.api.netsuite.com/services/rest/auth/oauth2/v1/token"
-    payload = {
-        "grant_type": "refresh_token",
-        "refresh_token": refresh_token,
-        "client_id": CLIENT_ID,
-        "client_secret": CLIENT_SECRET
-    }
-    headers = {
-        "Content-Type": "application/x-www-form-urlencoded"
-    }
-    try:
-        response = requests.post(
-            url, data=payload, headers=headers, timeout=10)
-        response.raise_for_status()
-        token_data = response.json()
-        return token_data["access_token"]
-    except requests.exceptions.RequestException as e:
-        print(f"Error refreshing NetSuite token: {e}")
-        sys.exit(1)
+    data = {"grant_type": "refresh_token", "refresh_token": refresh_token}
+    response = requests.post(TOKEN_URL, data=data,
+                             auth=HTTPBasicAuth(CLIENT_ID, CLIENT_SECRET))
+    response.raise_for_status()
+    token_data = response.json()
+    token_data["expires_at"] = time.time(
+    ) + float(token_data.get("expires_in", 3600))
+    return token_data
 
 
-def get_valid_access_token(tokens=None):
-    try:
-        # Load saved refresh token if tokens not passed
-        if tokens is None:
-            with open("netsuite_refresh_token.txt", "r") as f:
-                refresh_token = f.read().strip()
-        else:
-            refresh_token = tokens.get("refresh_token")
-
-        refreshed = refresh_access_token(refresh_token)
-        return refreshed
-    except Exception as e:
-        print(f"Failed to refresh access token: {e}")
-        sys.exit(1)
+def get_valid_access_token(token_data):
+    if time.time() > token_data.get("expires_at", 0):
+        print("🔄 Refreshing expired token...")
+        token_data = refresh_access_token(token_data["refresh_token"])
+    return token_data
 
 # ========================
 # NETSUITE MCP HANDLER (UNCHANGED)
@@ -568,62 +538,6 @@ def lead_exists_in_netsuite(phone, email, access_token):
         print("No existing lead found.")
         return False
 
-
-def refresh_and_rotate_token():
-    stored_refresh_token = load_refresh_token()
-    if not stored_refresh_token:
-        raise Exception("No refresh token found. Run OAuth2 flow first.")
-
-    tokens = refresh_access_token(stored_refresh_token)
-
-    # Only store if returned
-    if "refresh_token" in tokens:
-        store_refresh_token_somewhere(tokens["refresh_token"])
-        print("Refresh token updated")
-    else:
-        print("No refresh token returned; using existing one")
-
-    return tokens
-
-
-REFRESH_TOKEN_FILE = r"C:\Users\IISAdmin\Documents\Visual Studio 2017\PropertyConnectAI\netsuite_refresh_token.txt"
-
-
-def store_refresh_token_somewhere(new_refresh_token):
-    with open(REFRESH_TOKEN_FILE, "w") as f:
-        f.write(new_refresh_token)
-
-
-def load_refresh_token():
-    if os.path.exists(REFRESH_TOKEN_FILE):
-        with open(REFRESH_TOKEN_FILE) as f:
-            return f.read().strip()
-    return None
-
-
-def refresh_and_rotate_token():
-    stored_refresh_token = load_refresh_token()
-    if not stored_refresh_token:
-        raise Exception("No refresh token found. Run OAuth2 flow first.")
-
-    tokens = refresh_access_token(stored_refresh_token)
-
-    if "refresh_token" in tokens and tokens["refresh_token"]:
-        store_refresh_token_somewhere(tokens["refresh_token"])
-        print("Refresh token updated")
-    else:
-        print("ℹNo refresh token returned; keeping existing one")
-
-    return tokens
-
-
-def get_valid_access_token_from_file():
-    refresh_token = load_refresh_token()
-    if not refresh_token:
-        raise Exception("No refresh token found. Run OAuth2 flow first.")
-    return refresh_access_token(refresh_token)
-
-
 # ========================
 # TELEGRAM HANDLERS
 # ========================
@@ -632,7 +546,7 @@ def get_valid_access_token_from_file():
 @bot.message_handler(commands=['start'])
 def welcome(message):
     bot.send_chat_action(message.chat.id, 'typing')
-    access_token = get_valid_access_token()
+    valid_token = get_valid_access_token(tokens)
 
     user_id = message.chat.id
     user_conversations[user_id] = {
@@ -654,8 +568,10 @@ def welcome(message):
 
 @bot.message_handler(func=lambda m: True)
 def chat_with_ai(message):
+    global tokens
     bot.send_chat_action(message.chat.id, 'typing')
-    access_token = get_valid_access_token()  # Get fresh access token
+    valid_token = get_valid_access_token(tokens)
+    access_token = valid_token["access_token"]
 
     user_id = message.chat.id
     if user_id not in user_conversations:
@@ -712,21 +628,10 @@ def chat_with_ai(message):
 # MAIN EXECUTION
 # ========================
 if __name__ == "__main__":
-    REFRESH_TOKEN_FILE = "netsuite_refresh_token.txt"
+    print("🔐 Getting NetSuite authorization...")
+    code = get_auth_code()
+    tokens = exchange_code_for_token(code)
+    print("✅ NetSuite access token obtained!")
 
-    if not os.path.exists(REFRESH_TOKEN_FILE):
-        print("Performing first-time NetSuite authorization...")
-        code = get_auth_code()
-        tokens = exchange_code_for_token(code)
-        if "refresh_token" in tokens:
-            store_refresh_token_somewhere(tokens["refresh_token"])
-            print("Refresh token saved for future use.")
-        access_token = tokens["access_token"]
-    else:
-        print("Loading existing refresh token and refreshing access token...")
-        access_token = get_valid_access_token_from_file()
-
-    print("NetSuite access token obtained!")
-    print("Starting Telegram bot...")
-    bot.polling(non_stop=True)
+    print("🚀 Bot is running... (Ctrl+C to stop)")
     bot.polling(non_stop=True)
