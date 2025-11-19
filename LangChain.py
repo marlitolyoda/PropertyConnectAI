@@ -9,6 +9,7 @@ from typing import Optional, Dict, Any
 from langchain_core.messages import HumanMessage, AIMessage, ToolMessage, SystemMessage
 from langchain_core.tools import tool  # ✅ Use this instead
 from langchain_anthropic import ChatAnthropic
+from requests_oauthlib import OAuth1
 from requests.auth import HTTPBasicAuth
 from urllib.parse import urlparse, parse_qs
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -36,7 +37,15 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 CLIENT_ID = os.getenv("CLIENT_ID")
 CLIENT_SECRET = os.getenv("CLIENT_SECRET")
 
+REST_CLIENT_ID = os.getenv("REST_CLIENT_ID")
+REST_CLIENT_SECRET = os.getenv("REST_CLIENT_SECRET")
+
+REST_TOKEN_ID = os.getenv("REST_TOKEN_ID")
+REST_TOKEN_SECRET = os.getenv("REST_TOKEN_SECRET")
+
 ACCOUNT_ID = "3580073"
+REST_URL_SAMPLE_QUOTATION = f"https://{ACCOUNT_ID}.restlets.api.netsuite.com/app/site/hosting/restlet.nl?script=1441&deploy=1"
+
 REDIRECT_URI = "http://localhost:8080"
 AUTH_URL = f"https://{ACCOUNT_ID}.app.netsuite.com/app/login/oauth2/authorize.nl"
 TOKEN_URL = f"https://{ACCOUNT_ID}.suitetalk.api.netsuite.com/services/rest/auth/oauth2/v1/token"
@@ -81,12 +90,12 @@ def get_auth_code():
     httpd = HTTPServer(server_address, OAuthHandler)
     httpd.auth_code = None
     httpd.state_received = None
-    print("Opening browser for NetSuite login...")
+    print("🌐 Opening browser for NetSuite login...")
     webbrowser.open(auth_request_url)
     while httpd.auth_code is None:
         httpd.handle_request()
     if httpd.state_received != STATE:
-        raise ValueError("State mismatch — possible CSRF attack!")
+        raise ValueError("⚠️ State mismatch — possible CSRF attack!")
     return httpd.auth_code
 
 
@@ -133,6 +142,7 @@ def handle_mcp_function_call(tool_name, params, access_token):
     }
 
     base_url = "https://3580073.suitetalk.api.netsuite.com/services/rest/record/v1"
+    base_url1 = "https://3580073.suitetalk.api.netsuite.com/services"
     mcp_base = f"https://3580073.app.netsuite.com/mcp"
 
     if tool_name == "ns_listRecords":
@@ -174,6 +184,30 @@ def handle_mcp_function_call(tool_name, params, access_token):
         else:
             return {"error": f"Failed to create record ({response.status_code})", "details": response.text or "No response body"}
 
+    elif tool_name == "ns_createSampleQuotation":
+        fields = params.get("fields", {})
+        url = REST_URL_SAMPLE_QUOTATION
+
+        auth = OAuth1(
+            signature_method="HMAC-SHA256",
+            client_key=REST_TOKEN_ID,
+            client_secret=REST_TOKEN_SECRET,
+            resource_owner_key=REST_CLIENT_ID,
+            resource_owner_secret=REST_CLIENT_SECRET,
+            realm=ACCOUNT_ID
+        )
+
+        response = requests.post(url, auth=auth, json=fields)
+
+        try:
+            data = response.json() if response.text else {}
+        except ValueError:
+            data = {}
+        if response.ok:
+            return response.json()
+        else:
+            return {"error": "Failed to create sample quotation", "details": response.text}
+
     elif tool_name == "ns_updateRecord":
         record_type = params.get("recordType")
         record_id = params.get("recordId")
@@ -194,51 +228,50 @@ def handle_mcp_function_call(tool_name, params, access_token):
         else:
             return {"error": f"Failed to fetch metadata for {record_type}", "details": response.text}
 
-    elif tool_name == "ns_listSavedSearches":
-        url = f"{mcp_base}/rest/record/v1/savedSearch"
-        response = requests.get(url, headers=headers)
-        if response.ok:
-            return response.json()
-        else:
-            return {"error": "Failed to list saved searches", "details": response.text}
+    # elif tool_name == "ns_listSavedSearches":
+    #     url = f"{mcp_base}/rest/record/v1/savedSearch"
+    #     response = requests.get(url, headers=headers)
+    #     if response.ok:
+    #         return response.json()
+    #     else:
+    #         return {"error": "Failed to list saved searches", "details": response.text}
 
-    elif tool_name == "ns_runSavedSearch":
-        saved_search_id = params.get("searchId")
-        url = f"{base_url}/rest/record/v1/savedSearch/{saved_search_id}/results"
-        response = requests.get(url, headers=headers)
-        if response.ok:
-            return response.json()
-        else:
-            return {"error": f"Failed to run saved search {saved_search_id}", "details": response.text}
+    # elif tool_name == "ns_runSavedSearch":
+    #     saved_search_id = params.get("searchId")
+    #     url = f"{base_url}/rest/record/v1/savedSearch/{saved_search_id}/results"
+    #     response = requests.get(url, headers=headers)
+    #     if response.ok:
+    #         return response.json()
+    #     else:
+    #         return {"error": f"Failed to run saved search {saved_search_id}", "details": response.text}
 
-    elif tool_name == "ns_runReport":
-        report_id = params.get("reportId")
-        payload = {"parameters": params.get("parameters", {})}
-        url = f"{base_url}/rest/reporting/v1/reports/{report_id}/run"
-        response = requests.post(url, headers=headers, json=payload)
-        if response.ok:
-            return response.json()
-        else:
-            return {"error": f"Failed to run report {report_id}", "details": response.text}
+    # elif tool_name == "ns_runReport":
+    #     report_id = params.get("reportId")
+    #     payload = {"parameters": params.get("parameters", {})}
+    #     url = f"{base_url}/rest/reporting/v1/reports/{report_id}/run"
+    #     response = requests.post(url, headers=headers, json=payload)
+    #     if response.ok:
+    #         return response.json()
+    #     else:
+    #         return {"error": f"Failed to run report {report_id}", "details": response.text}
 
-    elif tool_name == "ns_listAllReports":
-        url = f"{mcp_base}/rest/reporting/v1/reports"
-        response = requests.get(url, headers=headers)
-        if response.ok:
-            return response.json()
-        else:
-            return {"error": "Failed to list reports", "details": response.text}
+    # elif tool_name == "ns_listAllReports":
+    #     url = f"{mcp_base}/rest/reporting/v1/reports"
+    #     response = requests.get(url, headers=headers)
+    #     if response.ok:
+    #         return response.json()
+    #     else:
+    #         return {"error": "Failed to list reports", "details": response.text}
 
     elif tool_name == "ns_runCustomSuiteQL":
         sql = params.get("sqlQuery")
         payload = {"q": sql}
-        url = f"{base_url}/rest/query/v1/suiteql"
+        url = f"{base_url1}/rest/query/v1/suiteql"
         response = requests.post(url, headers=headers, json=payload)
         if response.ok:
             return response.json()
         else:
             return {"error": f"Failed to run SuiteQL query", "details": response.text}
-
     else:
         return {"error": f"Unknown tool name: {tool_name}"}
 
@@ -272,6 +305,14 @@ def create_netsuite_tools(access_token: str):
         """Create a new record in NetSuite for the given record type and field values."""
         result = handle_mcp_function_call("ns_createRecord", {
             "recordType": record_type,
+            "fields": fields
+        }, access_token)
+        return json.dumps(result, indent=2)
+
+    @tool
+    def ns_createSampleQuotation(fields: dict) -> str:
+        """Create a new sample quotation in NetSuite for the given field values."""
+        result = handle_mcp_function_call("ns_createSampleQuotation", {
             "fields": fields
         }, access_token)
         return json.dumps(result, indent=2)
@@ -341,7 +382,8 @@ def create_netsuite_tools(access_token: str):
         # ns_runSavedSearch,
         # ns_listAllReports,
         # ns_runReport,
-        ns_runCustomSuiteQL
+        ns_runCustomSuiteQL,
+        ns_createSampleQuotation
     ]
 
 # ========================
@@ -381,34 +423,87 @@ def ask_claude_with_langchain(messages, access_token):
     • phone number, or
     • email, or
     • explicit intent to proceed.
+    - Create a quotation after getting the phone number and email.
+    • If no terms have given assume that the user want to pay for 24 months.
 
-    - Never create duplicates.
+    When the user provides enough information, you must call the appropriate NetSuite MCP tools:
+
+    1. To create a Lead:
+        {
+            "recordType": "customer",
+            "customform": {"id": "221"},
+            "entitystatus": {"id": "7"},
+            "subsidiary": {"id": "10"},
+            "isperson": true,
+            "firstname": "[user_firstname]",
+            "lastname": "[user_lastname]",
+            "phone": "[user_phone]",
+            "email": "[user_email]"
+        }
+
+    Before creation of Lead, you must:
+    - Run SuiteQL using ns_runCustomSuiteQL to check if the phone or email already exists.
+        • SELECT id, entityid, email, phone FROM customer WHERE email = '[user_email]' OR phone = '[user_phone]'
+    - If exists: do NOT create a duplicate.
+
+    2. Then last create a Sample Quotation transaction using the ns_createSampleQuotation tool:
+        ```json
+            {
+                "type": "customsale_sample_quotation",
+                "customform": "139" ,
+                "entity": "[user_id]",
+                "custbody_property": "[property_id_selected]", 
+                "custbody_collab_qout_terms": "[months_to_pay]",
+            }
+        ```
+    Before creation of Sample Quotation, you must:
+    - Run SuiteQL using ns_runCustomSuiteQL to get the id of the property selected.
+        • SELECT * FROM customrecord_collab_properties
 
     Query rules:
     - If user asks for “all properties”, request specific filters first (location, budget, type).
     - Telegram limit = 4096 chars → keep responses concise and optimized.
+    - Check location and name when checking properties.
 
-    Property record (customrecord_collab_properties):
-    - Name: custrecord_collab_prop_name
-    - Product Type: custrecord_collab_prop_product_type
-    - Area: custrecord_collab_prop_area
-    - Phase: custrecord_collab_prop_phase
-    - Block No: custrecord_collab_prop_blockno
-    - Lot No: custrecord_collab_prop_lotno
-    - Street: custrecord_collab_prop_street
-    - Location: custrecord_collab_prop_location
-    - Bedrooms: custrecord_collab_prop_bedrooms
-    - Bathroom: custrecord_collab_prop_bathroom
-    - Parking: custrecord_collab_prop_parkingspace
-    - Status: custrecord_collab_prop_status
-    - Base Price: custrecord_collab_prop_baseprice
-    - Misc Fee: custrecord_collab_prop_miscfee
-    - Reservation Fee: custrecord_collab_prop_resfee
+    Use the following field mappings exactly:
+    Record Type: customrecord_collab_properties
 
-    Hard rules:
+    Fields:
+    - Name → custrecord_collab_prop_name
+    - Product Type → custrecord_collab_prop_product_type
+        Allowed Values:
+        1 = Lot Only
+        2 = House and Lot
+    - Area (number only) → custrecord_collab_prop_area
+    - Phase (number only) → custrecord_collab_prop_phase
+    - Block No (number only) → custrecord_collab_prop_blockno
+    - Lot No (number only) → custrecord_collab_prop_lotno
+    - Street → custrecord_collab_prop_street
+    - Location → custrecord_collab_prop_location
+    - Bedrooms (number only) → custrecord_collab_prop_bedrooms
+    - Bathroom (number only) → custrecord_collab_prop_bathroom
+    - Parking (number only) → custrecord_collab_prop_parkingspace
+
+    Status → custrecord_collab_prop_status
+        Allowed Values:
+        1 = Available
+        2 = Reserved
+        3 = Sold
+        4 = Fully Paid
+        5 = On Hold
+        6 = Management Hold
+        7 = Not for Sale
+        8 = For Repair
+
+    - Base Price → custrecord_collab_prop_baseprice
+    - Misc Fee → custrecord_collab_prop_miscfee
+    - Reservation Fee → custrecord_collab_prop_resfee
+
+    Restrictions:
     - Do NOT show property internal IDs.
     - Do NOT respond outside your role.
-
+    - Do NOT access or provide details on other records except Custom Records "Properties", "Customer" (for leads), and "Sample Quotation" (custom transactions)
+    
     """
 
     # Convert to LangChain messages
@@ -482,15 +577,15 @@ def create_lead_in_netsuite(user_id, user_data, access_token):
 
     if not (phone and email):
         print(
-            f"Skipping lead creation — missing data. Phone: {phone}, Email: {email}")
+            f"⚠️ Skipping lead creation — missing data. Phone: {phone}, Email: {email}")
         return
 
     existing = lead_exists_in_netsuite(phone, email, access_token)
     if existing:
-        print(f"Lead already exists: ID {existing.get('id')}")
+        print(f"🚫 Lead already exists: ID {existing.get('id')}")
         return {"existing": existing.get("id")}
 
-    print(f"Creating Lead for {first_name} ({phone}, {email})")
+    print(f"🆕 Creating Lead for {first_name} ({phone}, {email})")
 
     payload = {
         "recordType": "customer",
@@ -508,7 +603,7 @@ def create_lead_in_netsuite(user_id, user_data, access_token):
 
     creation = handle_mcp_function_call(
         "ns_createRecord", payload, access_token)
-    print("Lead created in NetSuite:", creation)
+    print("✅ Lead created in NetSuite:", creation)
     return creation
 
 
@@ -532,10 +627,10 @@ def lead_exists_in_netsuite(phone, email, access_token):
 
     if records:
         existing = records[0]
-        print(f"Existing lead found: {existing}")
+        print(f"ℹ️ Existing lead found: {existing}")
         return existing
     else:
-        print("No existing lead found.")
+        print("🆕 No existing lead found.")
         return False
 
 # ========================
@@ -560,8 +655,8 @@ def welcome(message):
 
     bot.send_message(
         user_id,
-        f"Hi {message.from_user.first_name}, welcome to {BOT_NAME}!\n"
-        f"Tell me what kind of property you’re looking for",
+        f"👋 Hi {message.from_user.first_name}, welcome to {BOT_NAME}!\n"
+        f"Tell me what kind of property you're looking for 🏡",
         parse_mode="Markdown"
     )
 
@@ -577,8 +672,6 @@ def chat_with_ai(message):
     if user_id not in user_conversations:
         user_conversations[user_id] = {
             "chat_history": [],
-            "first_name": message.from_user.first_name,
-            "last_name": message.from_user.last_name,
             "phone": None,
             "email": None,
             "lead_created": False
@@ -599,23 +692,22 @@ def chat_with_ai(message):
 
     if phone_match and not user_data.get("phone"):
         user_data["phone"] = phone_match.group(1)
-        print(f"Phone saved for {user_id}: {user_data['phone']}")
-        bot.send_message(user_id, "📱 Got your contact number!")
+        print(f"📞 Phone saved for {user_id}: {user_data['phone']}")
+        # bot.send_message(user_id, "📱 Got your contact number!")
 
     if email_match and not user_data.get("email"):
         user_data["email"] = email_match.group(0)
-        print(f"Email saved for {user_id}: {user_data['email']}")
-        bot.send_message(user_id, "Thanks! I've saved your email.")
+        print(f"📧 Email saved for {user_id}: {user_data['email']}")
+        # bot.send_message(user_id, "📧 Thanks! I've saved your email.")
 
-    if (
-        user_data.get("phone")
-        and user_data.get("email")
-        and not user_data.get("lead_created")
-    ):
-        create_lead_in_netsuite(user_id, user_data, access_token)
-        user_data["lead_created"] = True
-        bot.send_message(
-            user_id, "You've been added as a lead in our system! Thank you")
+    # if (
+    #     user_data.get("phone")
+    #     and user_data.get("email")
+    #     and not user_data.get("lead_created")
+    # ):
+    #     create_lead_in_netsuite(user_id, user_data, access_token)
+    #     user_data["lead_created"] = True
+    #     bot.send_message(user_id, "✅ You've been added as a lead in our system! Thank you 😊")
 
     # ✅ Use LangChain
     ai_reply = ask_claude_with_langchain(conversation, access_token)
